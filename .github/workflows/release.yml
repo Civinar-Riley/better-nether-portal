@@ -1,0 +1,46 @@
+# 推送 v* 标签时：构建 mod jar 并自动发布 GitHub Release。
+# 版本号写在 mod.properties 的 mod_version，标签必须与之一致（标签 = v + 版本号）。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 标签（v1.2.3）必须与 mod.properties 的 mod_version（1.2.3）一致，防止忘改版本号
+      - name: Check version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PROP="$(sed -n 's/^mod_version=//p' mod.properties | tr -d '\r')"
+          echo "tag=$TAG mod.properties=$PROP"
+          if [ "$TAG" != "$PROP" ]; then
+            echo "::error::标签 v$TAG 与 mod.properties 的 mod_version=$PROP 不一致——先改 mod.properties 再打标签"
+            exit 1
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build
+        run: ./gradlew build --no-daemon
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/libs/*.jar
+          generate_release_notes: true

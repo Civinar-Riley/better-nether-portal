@@ -15,7 +15,7 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 ## 安装
 
 - 前置：Minecraft **1.21.1**、NeoForge **21.1.252** 及以上（客户端与服务端都要装）。
-- 把 `build/libs/better_nether_portal-<版本>.jar` 放进 `mods/` 目录。
+- 从 [Releases](https://github.com/Civinar-Riley/better-nether-portal/releases) 下载 `better_nether_portal-<版本>.jar` 放进 `mods/` 目录。
 
 ## 配置
 
@@ -40,6 +40,20 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 ## 兼容性
 
 - 只支持竖直 X/Z 平面。
+
+## 版本与发布
+
+- 版本号只写在 `mod.properties` 的 `mod_version`，与发布标签一一对应（标签 = `v` + 版本号，如 `v1.0.0`）。
+- 每次发布适当递增版本号（语义化版本）：
+  - **修 bug、不加功能** → 修订号 +1：`1.0.0` → `1.0.1`
+  - **新增功能 / 内容** → 次版本号 +1：`1.0.x` → `1.1.0`
+  - **破坏性改动**（配置键移除、存档链接不兼容等）→ 主版本号 +1：`1.x` → `2.0.0`
+- 发布流程：改 `mod_version` → 提交 → 打标签推送，GitHub Actions 自动构建并把 jar 发到该标签的 Release 页：
+
+  ```bash
+  git tag v1.1.0
+  git push origin v1.1.0
+  ```
 
 ## 许可
 
