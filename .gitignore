@@ -1,0 +1,40 @@
+### Gradle ###
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+### Eclipse ###
+.apt_generated
+.classpath
+.eclipse/
+.factorypath
+.project
+.settings
+bin/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### Minecraft Modding ###
+run/
+**/runs/
+**/src/generated/**/.cache/
+
+### 临时 / 备份 ###
+*.bak
+*.tmp
+build.log
+__pycache__/
+
+### ZCode 本地数据（工具自动生成） ###
+.zcode/

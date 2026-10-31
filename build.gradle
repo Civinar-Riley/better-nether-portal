@@ -1,0 +1,106 @@
+// 独立模组「更好的地狱门」：NeoForge 1.21.1 / Java 21。
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev'
+}
+
+// ===== 读取 mod.properties（缺失字段用兜底默认值） =====
+def props = new Properties()
+if (file('mod.properties').exists()) {
+    file('mod.properties').withInputStream { props.load(new InputStreamReader(it, 'UTF-8')) }
+}
+def mod_id = props.getProperty('mod_id') ?: project.name
+def mod_name = props.getProperty('mod_name') ?: project.name
+def mod_license = props.getProperty('mod_license') ?: 'All Rights Reserved'
+def mod_version = props.getProperty('mod_version') ?: '1.0.0'
+def mod_group_id = props.getProperty('mod_group_id') ?: 'net.riley.betterportal'
+def mod_authors = props.getProperty('mod_authors') ?: 'Riley'
+def mod_description = props.getProperty('mod_description') ?: 'A Minecraft mod.'
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+repositories {
+    mavenCentral()
+}
+
+// Mojang 为 1.21.1 用户提供 Java 21，mod 应以 Java 21 为目标
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            server()
+            programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+        }
+
+        gameTestServer {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
+        }
+
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+// ===== 展开 neoforge.mods.toml 中的占位属性 =====
+def generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    def replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    // 显式 UTF-8，避免中文 displayName/description 按平台默认编码写出乱码
+    filteringCharset = 'UTF-8'
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}
