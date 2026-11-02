@@ -1,6 +1,8 @@
 package net.riley.betterportal.gametest;
 
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 
 import net.minecraft.BlockUtil;
 import net.minecraft.core.BlockPos;
@@ -13,9 +15,11 @@ import net.minecraft.world.level.block.NetherPortalBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.riley.betterportal.BetterNetherPortalMod;
 import net.riley.betterportal.config.PortalConfig;
+import net.riley.betterportal.portal.CustomPortalShape;
 import net.riley.betterportal.portal.PortalBlueprint;
 import net.riley.betterportal.portal.PortalDestinationContext;
 import net.riley.betterportal.portal.PortalLinkData;
+import net.riley.betterportal.portal.PortalTravel;
 import net.neoforged.neoforge.event.RegisterGameTestsEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -233,6 +237,60 @@ public final class PortalGameTests {
         } finally {
             PortalDestinationContext.clear();
         }
+        helper.succeed();
+    }
+
+    // 按内部格集合自动铺框（门平面内四邻中不属于内部的格子放黑曜石），X 平面。
+    private static void buildFrameAround(GameTestHelper helper, Set<BlockPos> interior) {
+        for (BlockPos pos : interior) {
+            for (Direction dir : new Direction[] { Direction.EAST, Direction.WEST, Direction.UP, Direction.DOWN }) {
+                BlockPos neighbor = pos.relative(dir);
+                if (!interior.contains(neighbor)) {
+                    helper.setBlock(neighbor, Blocks.OBSIDIAN);
+                }
+            }
+        }
+    }
+
+    // 前后贴着的两扇十字门（z=5 与 z=6）不能被当成同一扇门：各自的根应是各自的门格。
+    @GameTest(template = "portal_platform")
+    public static void adjacentPortalsHaveSeparateRoots(GameTestHelper helper) {
+        BlockPos front = plusCenter();
+        BlockPos back = front.south();
+        for (BlockPos center : new BlockPos[] { front, back }) {
+            buildFrameAround(helper, Set.of(center));
+            helper.setBlock(center, Blocks.FIRE);
+            helper.assertBlockPresent(Blocks.NETHER_PORTAL, center);
+        }
+        var level = helper.getLevel();
+        helper.assertTrue(CustomPortalShape.findPortalRoot(level, helper.absolutePos(back)).equals(helper.absolutePos(back)),
+                "back portal root must not leak into front portal");
+        helper.assertTrue(CustomPortalShape.collectPortalCells(level, helper.absolutePos(front)).size() == 1,
+                "front portal should contain exactly one cell");
+        helper.succeed();
+    }
+
+    // 3×3 方块 + 左侧单格凸起：根落在凸起上，但落点矩形应从门心展开，拿到完整 3×3。
+    @GameTest(template = "portal_platform")
+    public static void largestRectangleStartsFromCenter(GameTestHelper helper) {
+        Set<BlockPos> interior = new HashSet<>();
+        for (int x = 5; x <= 7; x++) {
+            for (int y = 3; y <= 5; y++) {
+                interior.add(new BlockPos(x, y, 5));
+            }
+        }
+        interior.add(new BlockPos(4, 4, 5));
+        buildFrameAround(helper, interior);
+        helper.setBlock(new BlockPos(6, 4, 5), Blocks.FIRE);
+        for (BlockPos pos : interior) {
+            helper.assertBlockPresent(Blocks.NETHER_PORTAL, pos);
+        }
+        var level = helper.getLevel();
+        BlockPos root = CustomPortalShape.findPortalRoot(level, helper.absolutePos(new BlockPos(6, 4, 5)));
+        helper.assertTrue(root.equals(helper.absolutePos(new BlockPos(4, 4, 5))), "root should be the stub cell: " + root);
+        BlockUtil.FoundRectangle rect = PortalTravel.largestRectangle(level, root);
+        helper.assertTrue(rect.axis1Size == 3 && rect.axis2Size == 3,
+                "expected 3x3 rectangle, got " + rect.axis1Size + "x" + rect.axis2Size);
         helper.succeed();
     }
 

@@ -7,8 +7,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.NetherPortalBlock;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.level.portal.PortalForcer;
 import net.riley.betterportal.config.PortalConfig;
@@ -16,6 +14,7 @@ import net.riley.betterportal.portal.CustomPortalShape;
 import net.riley.betterportal.portal.PortalBlueprint;
 import net.riley.betterportal.portal.PortalDestinationContext;
 import net.riley.betterportal.portal.PortalLinkData;
+import net.riley.betterportal.portal.PortalTravel;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -48,19 +47,10 @@ public abstract class PortalForcerMixin {
             return;
         }
         BlockPos root = placed.get();
-        BlockState state = this.level.getBlockState(root);
-        if (!state.is(Blocks.NETHER_PORTAL)) {
+        if (!this.level.getBlockState(root).is(Blocks.NETHER_PORTAL)) {
             return;
         }
-        Direction.Axis portalAxis = state.getValue(NetherPortalBlock.AXIS);
-        BlockUtil.FoundRectangle rectangle = BlockUtil.getLargestRectangleAround(
-                root, portalAxis, 21, Direction.Axis.Y, 21,
-                candidate -> {
-                    BlockState candidateState = this.level.getBlockState(candidate);
-                    return candidateState.is(Blocks.NETHER_PORTAL)
-                            && candidateState.getValue(NetherPortalBlock.AXIS) == portalAxis;
-                });
-        cir.setReturnValue(Optional.of(rectangle));
+        cir.setReturnValue(Optional.of(PortalTravel.largestRectangle(this.level, root)));
     }
 
     @Inject(method = "findClosestPortalPosition", at = @At("RETURN"), cancellable = true)

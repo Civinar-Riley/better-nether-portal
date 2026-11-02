@@ -23,6 +23,9 @@ import net.riley.betterportal.spec.ModTags;
 // 最小门 = 1 格内径 + 上下左右 4 块框架方块；上限见 PortalConfig.PORTALS（默认 64 格 / 包围盒 21）。
 // Side: BOTH（点火判定只在服务端生效，客户端不需要调用）
 public final class CustomPortalShape {
+    // 一扇门的门方块连通块硬上限：配置允许的最大门（21×21）
+    private static final int MAX_PORTAL_CELLS = 21 * 21;
+
     private CustomPortalShape() {
     }
 
@@ -64,31 +67,76 @@ public final class CustomPortalShape {
                 : new Direction[] { Direction.SOUTH, Direction.NORTH, Direction.UP, Direction.DOWN };
     }
 
-    // 找到同一扇门里字典序最小的门方块（链接表与门形蓝图的稳定锚点）。
-    // 任意形状门没有固定“左下角”，用全连通块的最小坐标作根，重建/比较都稳定。
-    public static BlockPos findPortalRoot(BlockGetter level, BlockPos start) {
-        if (!level.getBlockState(start).is(Blocks.NETHER_PORTAL)) {
-            return start.immutable();
+    // 收集与 start 同一扇门的全部门方块：只走门平面内四邻、只认同轴门方块，
+    // 前后贴着或 X/Z 垂直相接的两扇门不会串成一扇。超过 MAX_PORTAL_CELLS 即停（防 /fill 大片门方块）。
+    public static Set<BlockPos> collectPortalCells(BlockGetter level, BlockPos start) {
+        BlockState origin = level.getBlockState(start);
+        if (!origin.is(Blocks.NETHER_PORTAL)) {
+            return Set.of();
         }
-        Set<BlockPos> visited = new HashSet<>();
+        Direction.Axis axis = origin.getValue(NetherPortalBlock.AXIS);
+        Direction[] dirs = planeDirs(axis);
+        Set<BlockPos> cells = new HashSet<>();
         Deque<BlockPos> queue = new ArrayDeque<>();
-        BlockPos root = start.immutable();
-        visited.add(root);
-        queue.add(root);
-        while (!queue.isEmpty()) {
+        BlockPos first = start.immutable();
+        cells.add(first);
+        queue.add(first);
+        while (!queue.isEmpty() && cells.size() <= MAX_PORTAL_CELLS) {
             BlockPos current = queue.poll();
-            if (comparePos(current, root) < 0) {
-                root = current;
-            }
-            for (Direction dir : Direction.values()) {
+            for (Direction dir : dirs) {
                 BlockPos next = current.relative(dir);
-                if (!visited.contains(next) && level.getBlockState(next).is(Blocks.NETHER_PORTAL)) {
-                    visited.add(next.immutable());
-                    queue.add(next.immutable());
+                if (!cells.contains(next) && isPortal(level.getBlockState(next), axis)) {
+                    cells.add(next);
+                    queue.add(next);
                 }
             }
         }
-        return root.immutable();
+        return cells;
+    }
+
+    // 找到同一扇门里字典序最小的门方块（链接表与门形蓝图的稳定锚点）。
+    // 任意形状门没有固定“左下角”，用全连通块的最小坐标作根，重建/比较都稳定。
+    public static BlockPos findPortalRoot(BlockGetter level, BlockPos start) {
+        Set<BlockPos> cells = collectPortalCells(level, start);
+        return cells.isEmpty() ? start.immutable() : rootOf(cells);
+    }
+
+    public static BlockPos rootOf(Set<BlockPos> cells) {
+        BlockPos root = null;
+        for (BlockPos pos : cells) {
+            if (root == null || comparePos(pos, root) < 0) {
+                root = pos;
+            }
+        }
+        return root;
+    }
+
+    // 离门形质心最近的门格（并列取字典序最小，保证确定性）；异形门找内接矩形的起点。
+    public static BlockPos centerOf(Set<BlockPos> cells) {
+        double cx = 0, cy = 0, cz = 0;
+        for (BlockPos pos : cells) {
+            cx += pos.getX();
+            cy += pos.getY();
+            cz += pos.getZ();
+        }
+        cx /= cells.size();
+        cy /= cells.size();
+        cz /= cells.size();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (BlockPos pos : cells) {
+            double dx = pos.getX() - cx, dy = pos.getY() - cy, dz = pos.getZ() - cz;
+            double distance = dx * dx + dy * dy + dz * dz;
+            if (distance < bestDistance || (distance == bestDistance && comparePos(pos, best) < 0)) {
+                bestDistance = distance;
+                best = pos;
+            }
+        }
+        return best;
+    }
+
+    private static boolean isPortal(BlockState state, Direction.Axis axis) {
+        return state.is(Blocks.NETHER_PORTAL) && state.getValue(NetherPortalBlock.AXIS) == axis;
     }
 
     private static int comparePos(BlockPos a, BlockPos b) {
@@ -114,6 +162,13 @@ public final class CustomPortalShape {
         int maxCells = PortalConfig.cfg(PortalConfig.PORTALS.maxInteriorCells);
         int maxSpan = PortalConfig.cfg(PortalConfig.PORTALS.maxSpan);
         Direction[] planeDirs = planeDirs(axis);
+        // 廉价预检：起点沿平面四向直线走，maxSpan 格内必须撞到框架；
+        // 否则泛洪必然泄漏/超限。开阔地放火（火焰蔓延）在这里就被挡掉，不跑整轮泛洪。
+        for (Direction dir : planeDirs) {
+            if (!rayHitsFrame(level, start, dir, maxSpan, requireFilled)) {
+                return Optional.empty();
+            }
+        }
         Set<BlockPos> interior = new HashSet<>();
         Deque<BlockPos> queue = new ArrayDeque<>();
         queue.add(start);
@@ -153,6 +208,21 @@ public final class CustomPortalShape {
             }
         }
         return Optional.of(new Found(axis, Set.copyOf(interior)));
+    }
+
+    private static boolean rayHitsFrame(LevelAccessor level, BlockPos start, Direction dir, int maxSpan, boolean requireFilled) {
+        BlockPos.MutableBlockPos cursor = start.mutable();
+        for (int step = 1; step <= maxSpan; step++) {
+            cursor.move(dir);
+            BlockState state = level.getBlockState(cursor);
+            if (isFrame(level, cursor, state)) {
+                return true;
+            }
+            if (!isInteriorBlock(state, requireFilled)) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private static boolean isInteriorBlock(BlockState state, boolean requireFilled) {

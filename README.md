@@ -31,15 +31,18 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 ## 构建与测试
 
 ```bash
-./gradlew build              # 产物 build/libs/better_nether_portal-1.0.0.jar
-./gradlew runGameTestServer  # GameTest（12 个：形状/标签/蓝图/链接/mixin）
+./gradlew build              # 产物 build/libs/better_nether_portal-1.0.1.jar
+./gradlew runGameTestServer  # GameTest（14 个：形状/标签/蓝图/链接/mixin）
 ```
 
 开发客户端：`./gradlew runClient`（需正版登录）。
 
+推送到 `main` 或提 PR 时，GitHub Actions 自动跑 `build` + `runGameTestServer`（`.github/workflows/ci.yml`）。
+
 ## 兼容性
 
 - 只支持竖直 X/Z 平面。
+- 点火生门走本模组的形状扫描（矩形门也是），**不会触发** NeoForge 的 `BlockEvent.PortalSpawnEvent`：依赖该事件拦截开门的领地/保护类模组拦不住本模组生成的门。传送时在对面按门形重建的门同样不经过该事件。
 
 ## 版本与发布
 

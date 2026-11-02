@@ -60,14 +60,21 @@ public abstract class NetherPortalBlockMixin {
         if (target == null) {
             return;
         }
-        Optional<BlockPos> linked = PortalLinkData.get(level.getServer())
-                .getLinkedPos(level.dimension(), sourceRoot, targetKey);
-        if (linked.isEmpty() || !target.getBlockState(linked.get()).is(Blocks.NETHER_PORTAL)) {
+        PortalLinkData links = PortalLinkData.get(level.getServer());
+        Optional<BlockPos> linked = links.getLinkedPos(level.dimension(), sourceRoot, targetKey);
+        if (linked.isEmpty()) {
+            return;
+        }
+        if (!target.getBlockState(linked.get()).is(Blocks.NETHER_PORTAL)) {
+            // 目标门已拆：顺手清掉失效链接，存档里的链接表不会只增不减
+            links.unlink(level.dimension(), sourceRoot);
             return;
         }
         BlockPos targetRoot = CustomPortalShape.findPortalRoot(target, linked.get());
         DimensionTransition transition = PortalTravel.toLinkedPortal(target, entity, pos, targetRoot);
         if (transition != null) {
+            // HEAD 处 setReturnValue 会提前返回，RETURN 注入不再执行，必须在这里清上下文
+            PortalDestinationContext.clear();
             cir.setReturnValue(transition);
         }
     }

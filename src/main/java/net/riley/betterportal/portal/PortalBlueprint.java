@@ -1,9 +1,7 @@
 package net.riley.betterportal.portal;
 
-import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Optional;
-import java.util.Queue;
 import java.util.Set;
 
 import net.minecraft.core.BlockPos;
@@ -31,23 +29,39 @@ public final class PortalBlueprint {
     private final Direction.Axis axis;
     private final Set<BlockPos> interiorOffsets;
     private final Set<BlockPos> frameOffsets;
-    private final int minRelY;
+    // 以下在构造时算好：落点搜索每个候选点都要遍历，避免反复分配集合
+    private final BlockPos[] allOffsets;
+    private final BlockPos[] bottomOffsets;
+    private final Set<BlockPos> allOffsetSet;
+    private final int minRelX, maxRelX, minRelY, maxRelY, minRelZ, maxRelZ;
 
     private PortalBlueprint(Direction.Axis axis, Set<BlockPos> interiorOffsets, Set<BlockPos> frameOffsets) {
         this.axis = axis;
         this.interiorOffsets = Set.copyOf(interiorOffsets);
         this.frameOffsets = Set.copyOf(frameOffsets);
-        int min = 0;
-        boolean first = true;
-        for (BlockPos offset : allOffsets()) {
-            if (first) {
-                min = offset.getY();
-                first = false;
-            } else {
-                min = Math.min(min, offset.getY());
-            }
+        Set<BlockPos> all = new HashSet<>(interiorOffsets);
+        all.addAll(frameOffsets);
+        this.allOffsetSet = Set.copyOf(all);
+        this.allOffsets = all.toArray(BlockPos[]::new);
+        int x0 = Integer.MAX_VALUE, x1 = Integer.MIN_VALUE;
+        int y0 = Integer.MAX_VALUE, y1 = Integer.MIN_VALUE;
+        int z0 = Integer.MAX_VALUE, z1 = Integer.MIN_VALUE;
+        for (BlockPos offset : this.allOffsets) {
+            x0 = Math.min(x0, offset.getX());
+            x1 = Math.max(x1, offset.getX());
+            y0 = Math.min(y0, offset.getY());
+            y1 = Math.max(y1, offset.getY());
+            z0 = Math.min(z0, offset.getZ());
+            z1 = Math.max(z1, offset.getZ());
         }
-        this.minRelY = min;
+        this.minRelX = x0;
+        this.maxRelX = x1;
+        this.minRelY = y0;
+        this.maxRelY = y1;
+        this.minRelZ = z0;
+        this.maxRelZ = z1;
+        int bottomY = y0;
+        this.bottomOffsets = all.stream().filter(o -> o.getY() == bottomY).toArray(BlockPos[]::new);
     }
 
     public static Optional<PortalBlueprint> capture(BlockGetter level, BlockPos portalPos) {
@@ -56,40 +70,27 @@ public final class PortalBlueprint {
             return Optional.empty();
         }
         Direction.Axis axis = origin.getValue(NetherPortalBlock.AXIS);
-        BlockPos root = CustomPortalShape.findPortalRoot(level, portalPos);
         int maxCells = PortalConfig.cfg(PortalConfig.PORTALS.maxInteriorCells);
         int maxSpan = PortalConfig.cfg(PortalConfig.PORTALS.maxSpan);
 
-        Set<BlockPos> interior = new HashSet<>();
-        Queue<BlockPos> queue = new ArrayDeque<>();
-        interior.add(root);
-        queue.add(root);
-        int minX = root.getX(), maxX = root.getX();
-        int minY = root.getY(), maxY = root.getY();
-        int minZ = root.getZ(), maxZ = root.getZ();
-
-        while (!queue.isEmpty()) {
-            BlockPos current = queue.poll();
-            for (Direction dir : CustomPortalShape.planeDirs(axis)) {
-                BlockPos next = current.relative(dir);
-                if (interior.contains(next) || !level.getBlockState(next).is(Blocks.NETHER_PORTAL)) {
-                    continue;
-                }
-                interior.add(next.immutable());
-                if (interior.size() > maxCells) {
-                    return Optional.empty();
-                }
-                minX = Math.min(minX, next.getX());
-                maxX = Math.max(maxX, next.getX());
-                minY = Math.min(minY, next.getY());
-                maxY = Math.max(maxY, next.getY());
-                minZ = Math.min(minZ, next.getZ());
-                maxZ = Math.max(maxZ, next.getZ());
-                if (maxX - minX + 1 > maxSpan || maxY - minY + 1 > maxSpan || maxZ - minZ + 1 > maxSpan) {
-                    return Optional.empty();
-                }
-                queue.add(next.immutable());
-            }
+        Set<BlockPos> interior = CustomPortalShape.collectPortalCells(level, portalPos);
+        if (interior.size() > maxCells) {
+            return Optional.empty();
+        }
+        BlockPos root = CustomPortalShape.rootOf(interior);
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (BlockPos pos : interior) {
+            minX = Math.min(minX, pos.getX());
+            maxX = Math.max(maxX, pos.getX());
+            minY = Math.min(minY, pos.getY());
+            maxY = Math.max(maxY, pos.getY());
+            minZ = Math.min(minZ, pos.getZ());
+            maxZ = Math.max(maxZ, pos.getZ());
+        }
+        if (maxX - minX + 1 > maxSpan || maxY - minY + 1 > maxSpan || maxZ - minZ + 1 > maxSpan) {
+            return Optional.empty();
         }
 
         Set<BlockPos> frame = new HashSet<>();
@@ -214,13 +215,14 @@ public final class PortalBlueprint {
     }
 
     private boolean canPlace(ServerLevel level, BlockPos root, WorldBorder border, int minBuild, int maxBuild, boolean carve) {
-        for (BlockPos offset : allOffsets()) {
-            BlockPos pos = root.offset(offset);
+        // 先用包围盒做高度/边界的整体判定，再逐格查方块
+        if (root.getY() + this.minRelY < minBuild || root.getY() + this.maxRelY > maxBuild) {
+            return false;
+        }
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (BlockPos offset : this.allOffsets) {
+            pos.setWithOffset(root, offset);
             if (!border.isWithinBounds(pos)) {
-                return false;
-            }
-            int y = pos.getY();
-            if (y < minBuild || y > maxBuild) {
                 return false;
             }
             if (!canReplace(level.getBlockState(pos), carve)) {
@@ -231,11 +233,9 @@ public final class PortalBlueprint {
     }
 
     private boolean hasSolidSupport(ServerLevel level, BlockPos root) {
-        for (BlockPos offset : allOffsets()) {
-            if (offset.getY() != this.minRelY) {
-                continue;
-            }
-            BlockPos below = root.offset(offset).below();
+        BlockPos.MutableBlockPos below = new BlockPos.MutableBlockPos();
+        for (BlockPos offset : this.bottomOffsets) {
+            below.setWithOffset(root, offset).move(Direction.DOWN);
             BlockState state = level.getBlockState(below);
             if (!isSolidGround(level, below, state) || isUnsafe(state)) {
                 return false;
@@ -260,22 +260,14 @@ public final class PortalBlueprint {
     }
 
     private boolean isEnvironmentSafe(ServerLevel level, BlockPos root, int minBuild, int maxBuild) {
-        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
-        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
-        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
-        for (BlockPos offset : allOffsets()) {
-            BlockPos pos = root.offset(offset);
-            minX = Math.min(minX, pos.getX());
-            maxX = Math.max(maxX, pos.getX());
-            minY = Math.min(minY, pos.getY());
-            maxY = Math.max(maxY, pos.getY());
-            minZ = Math.min(minZ, pos.getZ());
-            maxZ = Math.max(maxZ, pos.getZ());
-        }
+        int minX = root.getX() + this.minRelX, maxX = root.getX() + this.maxRelX;
+        int minY = root.getY() + this.minRelY, maxY = root.getY() + this.maxRelY;
+        int minZ = root.getZ() + this.minRelZ, maxZ = root.getZ() + this.maxRelZ;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (int x = minX - 1; x <= maxX + 1; x++) {
             for (int z = minZ - 1; z <= maxZ + 1; z++) {
                 for (int y = Math.max(minBuild, minY - 1); y <= Math.min(maxBuild, maxY + 2); y++) {
-                    if (isUnsafe(level.getBlockState(new BlockPos(x, y, z)))) {
+                    if (isUnsafe(level.getBlockState(pos.set(x, y, z)))) {
                         return false;
                     }
                 }
@@ -288,27 +280,28 @@ public final class PortalBlueprint {
         if (carve) {
             clearSafetyVolume(level, root);
         }
+        // 支撑与框架用 flag 3（与原版 createPortal 的 setBlockAndUpdate 一致）：
+        // 周围液体/沙砾正常更新；门方块最后用 flag 18 填，不触发邻块更新、避免填一半就被复检碎掉。
+        ensureSupport(level, root);
         BlockState frame = Blocks.OBSIDIAN.defaultBlockState();
         BlockState portal = Blocks.NETHER_PORTAL.defaultBlockState().setValue(NetherPortalBlock.AXIS, this.axis);
         for (BlockPos offset : this.frameOffsets) {
-            level.setBlock(root.offset(offset), frame, 18);
+            level.setBlockAndUpdate(root.offset(offset), frame);
         }
         for (BlockPos offset : this.interiorOffsets) {
             level.setBlock(root.offset(offset), portal, 18);
         }
-        ensureSupport(level, root);
     }
 
     // 开凿模式下清掉门前后的净空；框架/门格本身随后会被覆盖，不在这里动。
     private void clearSafetyVolume(ServerLevel level, BlockPos root) {
-        Set<BlockPos> blueprint = allOffsets();
         for (BlockPos pos : safetyPositions(root)) {
-            if (blueprint.contains(pos.subtract(root))) {
+            if (this.allOffsetSet.contains(pos.subtract(root))) {
                 continue;
             }
             BlockState state = level.getBlockState(pos);
             if (canReplace(state, true) && !state.is(Blocks.NETHER_PORTAL)) {
-                level.setBlock(pos, Blocks.AIR.defaultBlockState(), 18);
+                level.setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState());
             }
         }
     }
@@ -318,10 +311,7 @@ public final class PortalBlueprint {
         BlockState filler = level.dimension() == Level.NETHER
                 ? Blocks.NETHERRACK.defaultBlockState()
                 : Blocks.STONE.defaultBlockState();
-        for (BlockPos offset : allOffsets()) {
-            if (offset.getY() != this.minRelY) {
-                continue;
-            }
+        for (BlockPos offset : this.bottomOffsets) {
             BlockPos below = root.offset(offset).below();
             if (below.getY() < level.getMinBuildHeight()) {
                 continue;
@@ -332,7 +322,7 @@ public final class PortalBlueprint {
                 continue;
             }
             if (!isSolidGround(level, below, state) || isUnsafe(state)) {
-                level.setBlock(below, filler, 18);
+                level.setBlockAndUpdate(below, filler);
             }
         }
     }
@@ -350,13 +340,6 @@ public final class PortalBlueprint {
             positions.add(base.relative(negative));
         }
         return positions;
-    }
-
-    private Set<BlockPos> allOffsets() {
-        Set<BlockPos> all = new HashSet<>(this.interiorOffsets.size() + this.frameOffsets.size());
-        all.addAll(this.interiorOffsets);
-        all.addAll(this.frameOffsets);
-        return all;
     }
 
     private static boolean isSolidGround(ServerLevel level, BlockPos pos, BlockState state) {

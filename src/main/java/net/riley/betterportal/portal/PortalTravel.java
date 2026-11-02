@@ -1,11 +1,14 @@
 package net.riley.betterportal.portal;
 
+import java.util.Set;
+
 import net.minecraft.BlockUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.NetherPortalBlock;
 import net.minecraft.world.level.block.state.BlockState;
@@ -26,10 +29,7 @@ public final class PortalTravel {
         if (!targetState.is(Blocks.NETHER_PORTAL)) {
             return null;
         }
-        Direction.Axis targetAxis = targetState.getValue(NetherPortalBlock.AXIS);
-        BlockUtil.FoundRectangle targetRect = BlockUtil.getLargestRectangleAround(
-                targetRoot, targetAxis, 21, Direction.Axis.Y, 21,
-                pos -> isPortal(target.getBlockState(pos), targetAxis));
+        BlockUtil.FoundRectangle targetRect = largestRectangle(target, targetRoot);
 
         BlockState sourceState = entity.level().getBlockState(sourcePos);
         Direction.Axis sourceAxis = sourceState.hasProperty(NetherPortalBlock.AXIS)
@@ -85,6 +85,17 @@ public final class PortalTravel {
             }
         }
         return best == null ? null : CustomPortalShape.findPortalRoot(level, best);
+    }
+
+    // 门内的最大内接矩形：从门形质心附近的格子展开，而不是从根（字典序最小格，
+    // 对圆环/爱心多半在边角，展开出来只有 1×1，实体会被塞进门角）。
+    public static BlockUtil.FoundRectangle largestRectangle(BlockGetter level, BlockPos portalPos) {
+        Direction.Axis axis = level.getBlockState(portalPos).getValue(NetherPortalBlock.AXIS);
+        Set<BlockPos> cells = CustomPortalShape.collectPortalCells(level, portalPos);
+        BlockPos center = cells.isEmpty() ? portalPos : CustomPortalShape.centerOf(cells);
+        return BlockUtil.getLargestRectangleAround(
+                center, axis, 21, Direction.Axis.Y, 21,
+                pos -> isPortal(level.getBlockState(pos), axis));
     }
 
     private static boolean isPortal(BlockState state, Direction.Axis axis) {
