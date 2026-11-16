@@ -1,7 +1,10 @@
 package net.riley.betterportal.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import java.util.Optional;
 
+import net.minecraft.BlockUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceKey;
@@ -23,10 +26,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-// 门方块存活性：原版邻块变化时用矩形 PortalShape.isComplete 校验，
-// 任意形状的门会被误判而碎掉。这里先跑泛洪填充复检，通过则保留方块；
-// 不通过则放行原版逻辑（原版矩形门行为不变，框破损照旧碎门）。
-// Side: BOTH（updateShape 客户端也会跑；getPortalDestination 只在服务端）
+// 门方块按同轴连通形状复检；所有出口统一处理异形门落点与成对链接。
+// Side: BOTH（updateShape 客户端也会跑；传送只在服务端）
 @Mixin(NetherPortalBlock.class)
 public abstract class NetherPortalBlockMixin {
 
@@ -35,71 +36,62 @@ public abstract class NetherPortalBlockMixin {
                                             LevelAccessor level, BlockPos pos, BlockPos neighborPos,
                                             CallbackInfoReturnable<BlockState> cir) {
         Direction.Axis myAxis = state.getValue(NetherPortalBlock.AXIS);
-        Direction.Axis neighborAxis = dir.getAxis();
-        boolean flag = myAxis != neighborAxis && neighborAxis.isHorizontal();
-        // 与原版守卫一致：垂直平面的变化或相邻也是门方块时无需校验
-        if (flag || neighborState.is((NetherPortalBlock) (Object) this)) {
+        if (dir.getAxis().isHorizontal() && dir.getAxis() != myAxis) {
             return;
         }
-        if (CustomPortalShape.isPortalStillValid(level, pos, myAxis)) {
-            cir.setReturnValue(state);
+        if (neighborState.is(Blocks.NETHER_PORTAL) && neighborState.getValue(NetherPortalBlock.AXIS) == myAxis) {
+            return;
         }
+        cir.setReturnValue(CustomPortalShape.isPortalStillValid(level, pos, myAxis)
+                ? state : Blocks.AIR.defaultBlockState());
     }
 
-    // 传送前：写入上下文（供 PortalForcer mixin 复制门形），并优先走已链接的目标门。
-    @Inject(method = "getPortalDestination", at = @At("HEAD"), cancellable = true)
-    private void riley$linkedDestination(ServerLevel level, Entity entity, BlockPos pos,
-                                         CallbackInfoReturnable<DimensionTransition> cir) {
+    // 整次调用用 finally 收口；已链接的提前返回与嵌套调用都恢复原来的上下文。
+    @WrapMethod(method = "getPortalDestination")
+    private DimensionTransition riley$linkedDestination(ServerLevel level, Entity entity, BlockPos pos,
+                                                         Operation<DimensionTransition> original) {
         BlockPos sourceRoot = CustomPortalShape.findPortalRoot(level, pos);
+        PortalDestinationContext.Source previous = PortalDestinationContext.peek();
         PortalDestinationContext.push(new PortalDestinationContext.Source(level, pos.immutable(), sourceRoot));
-        if (!PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
-            return;
-        }
-        ResourceKey<Level> targetKey = level.dimension() == Level.NETHER ? Level.OVERWORLD : Level.NETHER;
-        ServerLevel target = level.getServer().getLevel(targetKey);
-        if (target == null) {
-            return;
-        }
-        PortalLinkData links = PortalLinkData.get(level.getServer());
-        Optional<BlockPos> linked = links.getLinkedPos(level.dimension(), sourceRoot, targetKey);
-        if (linked.isEmpty()) {
-            return;
-        }
-        if (!target.getBlockState(linked.get()).is(Blocks.NETHER_PORTAL)) {
-            // 目标门已拆：顺手清掉失效链接，存档里的链接表不会只增不减
-            links.unlink(level.dimension(), sourceRoot);
-            return;
-        }
-        BlockPos targetRoot = CustomPortalShape.findPortalRoot(target, linked.get());
-        DimensionTransition transition = PortalTravel.toLinkedPortal(target, entity, pos, targetRoot);
-        if (transition != null) {
-            // HEAD 处 setReturnValue 会提前返回，RETURN 注入不再执行，必须在这里清上下文
-            PortalDestinationContext.clear();
-            cir.setReturnValue(transition);
+        try {
+            if (PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
+                ResourceKey<Level> targetKey = level.dimension() == Level.NETHER ? Level.OVERWORLD : Level.NETHER;
+                ServerLevel target = level.getServer().getLevel(targetKey);
+                PortalLinkData links = PortalLinkData.get(level.getServer());
+                Optional<BlockPos> linked = links.getLinkedPos(level.dimension(), sourceRoot, targetKey);
+                if (target != null && linked.isPresent()) {
+                    BlockPos targetPos = linked.get();
+                    if (target.getWorldBorder().isWithinBounds(targetPos)
+                            && target.getBlockState(targetPos).is(Blocks.NETHER_PORTAL)) {
+                        BlockPos targetRoot = CustomPortalShape.findPortalRoot(target, targetPos);
+                        return PortalTravel.toPortal(target, entity, pos, targetRoot,
+                                DimensionTransition.PLAY_PORTAL_SOUND.then(e -> e.placePortalTicket(targetRoot))
+                                        .then(e -> links.link(level.dimension(), sourceRoot, targetKey, targetRoot)));
+                    }
+                    links.unlink(level.dimension(), sourceRoot);
+                }
+            }
+            return original.call(level, entity, pos);
+        } finally {
+            if (previous == null) {
+                PortalDestinationContext.clear();
+            } else {
+                PortalDestinationContext.push(previous);
+            }
         }
     }
 
-    // 传送后：把源门与本次实际到达的门配对；无论成功与否都清理 ThreadLocal。
-    @Inject(method = "getPortalDestination", at = @At("RETURN"))
-    private void riley$recordDestinationLink(ServerLevel level, Entity entity, BlockPos pos,
-                                             CallbackInfoReturnable<DimensionTransition> cir) {
-        try {
-            if (!PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
-                return;
-            }
-            PortalDestinationContext.Source source = PortalDestinationContext.peek();
-            DimensionTransition transition = cir.getReturnValue();
-            if (source == null || transition == null) {
-                return;
-            }
-            ServerLevel target = transition.newLevel();
-            BlockPos targetRoot = PortalTravel.findPortalRootNear(target, transition.pos());
-            if (targetRoot != null) {
-                PortalLinkData.get(level.getServer())
-                        .link(level.dimension(), source.root(), target.dimension(), targetRoot);
-            }
-        } finally {
-            PortalDestinationContext.clear();
+    // 在原版已选定出口矩形后记录确切的门；碰撞修正可能把实体移到旁边，不能再从落点猜门。
+    @Inject(method = "getDimensionTransitionFromExit", at = @At("HEAD"), cancellable = true)
+    private static void riley$customExit(Entity entity, BlockPos pos, BlockUtil.FoundRectangle rectangle,
+                                         ServerLevel target, DimensionTransition.PostDimensionTransition postTransition,
+                                         CallbackInfoReturnable<DimensionTransition> cir) {
+        BlockPos targetRoot = CustomPortalShape.findPortalRoot(target, rectangle.minCorner);
+        PortalDestinationContext.Source source = PortalDestinationContext.peek();
+        if (source != null && PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
+            postTransition = postTransition.then(e -> PortalLinkData.get(target.getServer())
+                    .link(source.level().dimension(), source.root(), target.dimension(), targetRoot));
         }
+        cir.setReturnValue(PortalTravel.toPortal(target, entity, pos, targetRoot, postTransition));
     }
 }

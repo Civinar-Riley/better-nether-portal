@@ -101,9 +101,10 @@ public final class PortalBlueprint {
                     continue;
                 }
                 BlockState state = level.getBlockState(neighbor);
-                if (CustomPortalShape.isFrame(level, neighbor, state)) {
-                    frame.add(neighbor.subtract(root));
+                if (!CustomPortalShape.isFrame(level, neighbor, state)) {
+                    return Optional.empty();
                 }
+                frame.add(neighbor.subtract(root));
             }
         }
         if (frame.isEmpty()) {
@@ -165,7 +166,7 @@ public final class PortalBlueprint {
                         if (!canPlace(level, root, border, minBuild, maxBuild, false)) {
                             continue;
                         }
-                        if (!hasSolidSupport(level, root) || !hasPlayerClearance(level, root, false)) {
+                        if (!hasSolidSupport(level, root) || !hasPlayerClearance(level, root, border, false)) {
                             continue;
                         }
                         if (!isEnvironmentSafe(level, root, minBuild, maxBuild)) {
@@ -199,7 +200,7 @@ public final class PortalBlueprint {
                             if (!canPlace(level, root, border, minBuild, maxBuild, carve)) {
                                 continue;
                             }
-                            if (!hasPlayerClearance(level, root, carve)) {
+                            if (!canEnsureSupport(level, root) || !hasPlayerClearance(level, root, border, carve)) {
                                 continue;
                             }
                             if (!isEnvironmentSafe(level, root, minBuild, maxBuild)) {
@@ -244,15 +245,29 @@ public final class PortalBlueprint {
         return true;
     }
 
-    private boolean hasPlayerClearance(ServerLevel level, BlockPos root, boolean carve) {
+    // 空中/开凿落点需要补支撑时，也不能覆盖玩家方块。
+    private boolean canEnsureSupport(ServerLevel level, BlockPos root) {
+        for (BlockPos offset : this.bottomOffsets) {
+            BlockPos below = root.offset(offset).below();
+            BlockState state = level.getBlockState(below);
+            if (!isSolidGround(level, below, state) && !canReplace(state, false)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean hasPlayerClearance(ServerLevel level, BlockPos root, WorldBorder border, boolean carve) {
         for (BlockPos pos : safetyPositions(root)) {
+            if (!border.isWithinBounds(pos)) {
+                return false;
+            }
+            // 门格会在粘贴时替换，已由 canPlace 检查；这里检查最终保留的出口空间。
+            if (this.allOffsetSet.contains(pos.subtract(root))) {
+                continue;
+            }
             BlockState state = level.getBlockState(pos);
-            if (carve) {
-                if (!canReplace(state, true) && !state.is(Blocks.NETHER_PORTAL)
-                        && !CustomPortalShape.isFrame(level, pos, state)) {
-                    return false;
-                }
-            } else if (!isOpenForPlayer(state)) {
+            if (!isOpenForPlayer(level, pos, state) && (!carve || !canReplace(state, true))) {
                 return false;
             }
         }
@@ -321,7 +336,7 @@ public final class PortalBlueprint {
                     || CustomPortalShape.isFrame(level, below, state)) {
                 continue;
             }
-            if (!isSolidGround(level, below, state) || isUnsafe(state)) {
+            if (!isSolidGround(level, below, state) && canReplace(state, false)) {
                 level.setBlockAndUpdate(below, filler);
             }
         }
@@ -350,23 +365,23 @@ public final class PortalBlueprint {
         return !shape.isEmpty();
     }
 
-    private static boolean isOpenForPlayer(BlockState state) {
-        return state.isAir() || state.canBeReplaced() || !state.getFluidState().isEmpty()
-                || state.is(Blocks.NETHER_PORTAL);
+    private static boolean isOpenForPlayer(ServerLevel level, BlockPos pos, BlockState state) {
+        return state.getCollisionShape(level, pos).isEmpty();
     }
 
     private static boolean canReplace(BlockState state, boolean carve) {
+        if (isProtected(state)) {
+            return false;
+        }
         if (carve) {
             // 开凿只动自然地形/空气/水，绝不拆玩家建筑、矿石或容器。
-            return !isProtected(state) && (isNaturalTerrain(state) || canReplace(state, false));
+            return isNaturalTerrain(state) || canReplace(state, false);
         }
         if (state.isAir() || state.is(Blocks.FIRE) || state.is(Blocks.SOUL_FIRE)) {
             return true;
         }
-        if (!state.getFluidState().isEmpty()) {
-            return !state.getFluidState().is(Fluids.LAVA) && !state.getFluidState().is(Fluids.FLOWING_LAVA);
-        }
-        return state.canBeReplaced();
+        // 含水方块仍按方块本身判断；水浸箱子、告示牌和楼梯都不是水格。
+        return !isUnsafe(state) && (state.is(Blocks.WATER) || state.canBeReplaced());
     }
 
     // 允许开凿的自然方块白名单；模组/建筑方块不在内，宁可回退原版也不拆家。

@@ -10,7 +10,8 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 - **竖直 X / Z 平面**：门必须立在竖直平面内；默认内径 ≤64 格、包围盒 ≤21。
 - **框架标签**：`#better_nether_portal:portal_frames` 默认含黑曜石 + 哭泣黑曜石；数据包可追加模组方块。
 - **对面复制门形**：目标维度没有现成门时，按源门形状寻找安全落点重建；失败回退原版 2×3。
-- **成对持久链接**：成对门记在 `better_nether_portal_links` SavedData 里，附近有别的门也不会互相抢人；拆门自动失效重配。
+- **安全出口**：优先选能容纳实体的门内矩形；小门尝试门前后有支撑的空位，没有可用落点时取消传送。
+- **成对持久链接**：实体完成传送后，成对门记在 `better_nether_portal_links` SavedData 里；附近有别的门也不会互相抢人，拆门自动失效重配，扩门后更新锚点。
 
 ## 安装
 
@@ -28,16 +29,18 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 | `portal.copy_shape_to_destination` | true | 对面新建门时复制源门形状 |
 | `portal.persistent_links` | true | 成对门持久链接 |
 
+格数与跨度上限同时约束点火、门存活复检和目标门创建；原版 2×3 回退也需满足上限。降低上限后，已有超限门在邻块更新时会熄灭。
+
 ## 构建与测试
 
 ```bash
-./gradlew build              # 产物 build/libs/better_nether_portal-1.0.1.jar
-./gradlew runGameTestServer  # GameTest（14 个：形状/标签/蓝图/链接/mixin）
+./gradlew build              # 产物 build/libs/better_nether_portal-1.0.2.jar
+./gradlew runGameTestServer  # 28 个 GameTest：形状/蓝图保护/出口碰撞/链接/配置/mixin
 ```
 
 开发客户端：`./gradlew runClient`（需正版登录）。
 
-推送到 `main` 或提 PR 时，GitHub Actions 自动跑 `build` + `runGameTestServer`（`.github/workflows/ci.yml`）。
+推送到 `main`、提 PR 或发布 `v*` 标签时，GitHub Actions 自动跑 `build` + `runGameTestServer`；测试使用独立的 `build/gametest/` 目录，不读取开发客户端的 `run/config/`。
 
 ## 兼容性
 

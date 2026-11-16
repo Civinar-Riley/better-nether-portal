@@ -1,13 +1,19 @@
 package net.riley.betterportal.mixin;
 
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import net.minecraft.BlockUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.level.portal.PortalForcer;
 import net.riley.betterportal.config.PortalConfig;
 import net.riley.betterportal.portal.CustomPortalShape;
@@ -35,46 +41,57 @@ public abstract class PortalForcerMixin {
     private void riley$createBlueprintPortal(BlockPos pos, Direction.Axis axis,
             CallbackInfoReturnable<Optional<BlockUtil.FoundRectangle>> cir) {
         PortalDestinationContext.Source source = PortalDestinationContext.peek();
-        if (source == null || !PortalConfig.cfg(PortalConfig.PORTALS.copyShapeToDestination)) {
-            return;
+        if (source != null && PortalConfig.cfg(PortalConfig.PORTALS.copyShapeToDestination)) {
+            Optional<BlockPos> placed = PortalBlueprint.capture(source.level(), source.portalPos())
+                    .flatMap(blueprint -> blueprint.placeNear(this.level, pos));
+            if (placed.isPresent()) {
+                cir.setReturnValue(Optional.of(PortalTravel.largestRectangle(this.level, placed.get())));
+                return;
+            }
         }
-        Optional<PortalBlueprint> blueprint = PortalBlueprint.capture(source.level(), source.portalPos());
-        if (blueprint.isEmpty()) {
-            return;
-        }
-        Optional<BlockPos> placed = blueprint.get().placeNear(this.level, pos);
-        if (placed.isEmpty()) {
-            return;
-        }
-        BlockPos root = placed.get();
-        if (!this.level.getBlockState(root).is(Blocks.NETHER_PORTAL)) {
-            return;
-        }
-        cir.setReturnValue(Optional.of(PortalTravel.largestRectangle(this.level, root)));
-    }
-
-    @Inject(method = "findClosestPortalPosition", at = @At("RETURN"), cancellable = true)
-    private void riley$avoidLinkedPortalHijack(BlockPos exitPos, boolean isNether, WorldBorder worldBorder,
-            CallbackInfoReturnable<Optional<BlockPos>> cir) {
-        if (!PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
-            return;
-        }
-        PortalDestinationContext.Source source = PortalDestinationContext.peek();
-        Optional<BlockPos> found = cir.getReturnValue();
-        if (source == null || found.isEmpty()) {
-            return;
-        }
-        BlockPos targetRoot = CustomPortalShape.findPortalRoot(this.level, found.get());
-        Optional<PortalLinkData.PortalRef> owner = PortalLinkData.get(this.level.getServer())
-                .getLinkedRef(this.level.dimension(), targetRoot);
-        if (owner.isEmpty() || owner.get().matches(source.level().dimension(), source.root())) {
-            return;
-        }
-        // 链接另一端的门已拆掉时视为失效链接，允许原版复用该门并重新配对。
-        boolean ownerAlive = owner.get().dimension().equals(source.level().dimension())
-                && source.level().getBlockState(owner.get().pos()).is(Blocks.NETHER_PORTAL);
-        if (ownerAlive) {
+        // 复制关闭或失败时，原版 2×3 回退也必须满足同一尺寸上限。
+        if (PortalConfig.cfg(PortalConfig.PORTALS.maxInteriorCells) < 6
+                || PortalConfig.cfg(PortalConfig.PORTALS.maxSpan) < 3) {
             cir.setReturnValue(Optional.empty());
         }
+    }
+
+    @WrapOperation(method = "findClosestPortalPosition",
+            at = @At(value = "INVOKE", target = "Ljava/util/stream/Stream;min(Ljava/util/Comparator;)Ljava/util/Optional;"))
+    private Optional<BlockPos> riley$avoidLinkedPortalHijack(Stream<BlockPos> candidates, Comparator<BlockPos> order,
+                                                            Operation<Optional<BlockPos>> original) {
+        PortalDestinationContext.Source source = PortalDestinationContext.peek();
+        if (source == null || !PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
+            return original.call(candidates, order);
+        }
+        PortalLinkData links = PortalLinkData.get(this.level.getServer());
+        // 每扇门只查一次归属；同一门的多个 POI 共享结果，但仍按原版距离排序。
+        Map<BlockPos, Boolean> available = new HashMap<>();
+        return original.call(candidates.filter(candidate -> {
+            Boolean cached = available.get(candidate);
+            if (cached != null) {
+                return cached;
+            }
+            Set<BlockPos> cells = CustomPortalShape.collectPortalCells(this.level, candidate);
+            if (cells.isEmpty()) {
+                return false;
+            }
+            BlockPos root = CustomPortalShape.rootOf(cells);
+            Optional<PortalLinkData.PortalRef> owner = links.getLinkedRef(this.level.dimension(), root);
+            boolean allowed = owner.isEmpty() || owner.get().matches(source.level().dimension(), source.root());
+            if (!allowed) {
+                ServerLevel ownerLevel = this.level.getServer().getLevel(owner.get().dimension());
+                boolean ownerAlive = ownerLevel != null && ownerLevel.getBlockState(owner.get().pos()).is(Blocks.NETHER_PORTAL);
+                allowed = !ownerAlive || (ownerLevel == source.level()
+                        && CustomPortalShape.findPortalRoot(ownerLevel, owner.get().pos()).equals(source.root()));
+                if (!ownerAlive) {
+                    links.unlink(this.level.dimension(), root);
+                }
+            }
+            for (BlockPos cell : cells) {
+                available.put(cell, allowed);
+            }
+            return allowed;
+        }), order);
     }
 }

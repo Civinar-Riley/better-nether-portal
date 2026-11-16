@@ -28,10 +28,17 @@ public abstract class BaseFireBlockMixin {
         if (!CustomPortalShape.inPortalDimension(level)) {
             return;
         }
+        if (level.isClientSide()) {
+            ci.cancel();
+            return;
+        }
         Optional<CustomPortalShape.Found> found = CustomPortalShape.findEmptyPortalShape(level, pos);
         if (found.isPresent()) {
             found.get().fillPortalBlocks(level);
-            ci.cancel();
+        } else if (!state.canSurvive(level, pos)) {
+            level.removeBlock(pos, false);
         }
+        // 自定义扫描失败也不能继续走原版矩形判定，否则会绕过配置上限。
+        ci.cancel();
     }
 }

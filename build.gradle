@@ -54,6 +54,7 @@ neoForge {
 
         gameTestServer {
             type = 'gameTestServer'
+            gameDirectory = file('build/gametest')
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
         }
 

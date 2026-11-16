@@ -40,6 +40,10 @@ jobs:
         # 用 bash 显式调用，避免仓库里 gradlew 缺可执行权限位时 Permission denied
         run: bash ./gradlew build --no-daemon
 
+      - name: GameTest
+        timeout-minutes: 15
+        run: bash ./gradlew runGameTestServer --no-daemon
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

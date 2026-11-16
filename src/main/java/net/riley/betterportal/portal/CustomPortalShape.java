@@ -155,7 +155,7 @@ public final class CustomPortalShape {
         if (axis != Direction.Axis.X && axis != Direction.Axis.Z) {
             return Optional.empty();
         }
-        if (!isInteriorBlock(level.getBlockState(start), requireFilled)) {
+        if (!isInteriorBlock(level.getBlockState(start), axis, requireFilled)) {
             return Optional.empty();
         }
 
@@ -165,7 +165,7 @@ public final class CustomPortalShape {
         // 廉价预检：起点沿平面四向直线走，maxSpan 格内必须撞到框架；
         // 否则泛洪必然泄漏/超限。开阔地放火（火焰蔓延）在这里就被挡掉，不跑整轮泛洪。
         for (Direction dir : planeDirs) {
-            if (!rayHitsFrame(level, start, dir, maxSpan, requireFilled)) {
+            if (!rayHitsFrame(level, start, dir, maxSpan, axis, requireFilled)) {
                 return Optional.empty();
             }
         }
@@ -188,7 +188,7 @@ public final class CustomPortalShape {
                 if (isFrame(level, neighbor, neighborState)) {
                     continue;
                 }
-                if (!isInteriorBlock(neighborState, requireFilled)) {
+                if (!isInteriorBlock(neighborState, axis, requireFilled)) {
                     return Optional.empty(); // 框上有缺口，形状不闭合
                 }
                 interior.add(neighbor);
@@ -210,7 +210,8 @@ public final class CustomPortalShape {
         return Optional.of(new Found(axis, Set.copyOf(interior)));
     }
 
-    private static boolean rayHitsFrame(LevelAccessor level, BlockPos start, Direction dir, int maxSpan, boolean requireFilled) {
+    private static boolean rayHitsFrame(LevelAccessor level, BlockPos start, Direction dir, int maxSpan,
+                                        Direction.Axis axis, boolean requireFilled) {
         BlockPos.MutableBlockPos cursor = start.mutable();
         for (int step = 1; step <= maxSpan; step++) {
             cursor.move(dir);
@@ -218,18 +219,15 @@ public final class CustomPortalShape {
             if (isFrame(level, cursor, state)) {
                 return true;
             }
-            if (!isInteriorBlock(state, requireFilled)) {
+            if (!isInteriorBlock(state, axis, requireFilled)) {
                 return false;
             }
         }
         return false;
     }
 
-    private static boolean isInteriorBlock(BlockState state, boolean requireFilled) {
-        if (requireFilled) {
-            return state.is(Blocks.NETHER_PORTAL);
-        }
-        return state.isAir() || state.is(BlockTags.FIRE) || state.is(Blocks.NETHER_PORTAL);
+    private static boolean isInteriorBlock(BlockState state, Direction.Axis axis, boolean requireFilled) {
+        return isPortal(state, axis) || (!requireFilled && (state.isAir() || state.is(BlockTags.FIRE)));
     }
 
     private static int span(int a, int v, int b) {
