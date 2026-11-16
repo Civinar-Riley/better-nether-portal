@@ -7,6 +7,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BaseFireBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.riley.betterportal.portal.CustomPortalShape;
+import net.riley.betterportal.portal.PortalCreation;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -33,7 +34,7 @@ public abstract class BaseFireBlockMixin {
             return;
         }
         Optional<CustomPortalShape.Found> found = CustomPortalShape.findEmptyPortalShape(level, pos);
-        if (found.isPresent()) {
+        if (found.isPresent() && PortalCreation.ignite(level, pos, found.get())) {
             found.get().fillPortalBlocks(level);
         } else if (!state.canSurvive(level, pos)) {
             level.removeBlock(pos, false);

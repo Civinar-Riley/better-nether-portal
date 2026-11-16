@@ -1,0 +1,7 @@
+{
+  "message.better_nether_portal.no_destination": "No Nether portal exit was found. Check the destination area.",
+  "message.better_nether_portal.obstructed": "The portal exit is blocked. Clear space on both sides and provide a place to stand.",
+  "message.better_nether_portal.border": "The portal exit is outside the world border.",
+  "message.better_nether_portal.limit": "The destination portal exceeds the server's size limit.",
+  "message.better_nether_portal.denied": "Creating a Nether portal is not allowed at the destination."
+}

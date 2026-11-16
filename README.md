@@ -12,6 +12,8 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 - **对面复制门形**：目标维度没有现成门时，按源门形状寻找安全落点重建；失败回退原版 2×3。
 - **安全出口**：优先选能容纳实体的门内矩形；小门尝试门前后有支撑的空位，没有可用落点时取消传送。
 - **成对持久链接**：实体完成传送后，成对门记在 `better_nether_portal_links` SavedData 里；附近有别的门也不会互相抢人，拆门自动失效重配，扩门后更新锚点。
+- **建门保护事件**：点火、复制出口和原版回退都在修改方块前发送可取消事件，取消后不会再回退建门。
+- **失败提示**：出口堵塞、世界边界、尺寸上限或禁止建门时，在玩家操作栏说明原因；每人最多每 5 秒提示一次，支持中英文。
 
 ## 安装
 
@@ -34,18 +36,22 @@ Minecraft **1.21.1 / NeoForge** 模组——让地狱门不再限于矩形。
 ## 构建与测试
 
 ```bash
-./gradlew build              # 产物 build/libs/better_nether_portal-1.0.2.jar
-./gradlew runGameTestServer  # 28 个 GameTest：形状/蓝图保护/出口碰撞/链接/配置/mixin
+./gradlew build              # 产物 build/libs/better_nether_portal-1.1.0.jar
+./gradlew runGameTestServer  # 33 个 GameTest：形状/蓝图保护/出口碰撞/链接/配置/事件/提示/mixin
 ```
 
 开发客户端：`./gradlew runClient`（需正版登录）。
 
 推送到 `main`、提 PR 或发布 `v*` 标签时，GitHub Actions 自动跑 `build` + `runGameTestServer`；测试使用独立的 `build/gametest/` 目录，不读取开发客户端的 `run/config/`。
 
+1.1.0 的落点性能对照与验证范围见 [优化验证](docs/optimization-1.1.0.md)。
+
 ## 兼容性
 
 - 只支持竖直 X/Z 平面。
-- 点火生门走本模组的形状扫描（矩形门也是），**不会触发** NeoForge 的 `BlockEvent.PortalSpawnEvent`：依赖该事件拦截开门的领地/保护类模组拦不住本模组生成的门。传送时在对面按门形重建的门同样不经过该事件。
+- 点火、复制出口和原版回退均发送 `net.riley.betterportal.api.PortalCreateEvent`，它继承 NeoForge 的 `BlockEvent.PortalSpawnEvent`，现有父事件监听器可正常取消建门。
+- 保护模组需要检查完整修改范围时，可订阅 `PortalCreateEvent`：`getPlannedBlocks()` 提供门格、框架、支撑及净空清理的全部拟写入位置与状态；`getPortalCells()` 是实际门格集合，`getReason()` 区分 `IGNITION`、`COPY`、`FALLBACK`。集合不可变，取消发生在第一次方块写入之前。
+- 事件只检查新建门；已存在门之间的传送仍使用 NeoForge 的维度传送事件。
 
 ## 版本与发布
 

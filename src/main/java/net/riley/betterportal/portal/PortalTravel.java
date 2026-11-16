@@ -32,7 +32,11 @@ public final class PortalTravel {
     public static DimensionTransition toPortal(ServerLevel target, Entity entity, BlockPos sourcePos, BlockPos targetRoot,
                                                DimensionTransition.PostDimensionTransition postTransition) {
         BlockState targetState = target.getBlockState(targetRoot);
-        if (!targetState.is(Blocks.NETHER_PORTAL) || !target.getWorldBorder().isWithinBounds(targetRoot)) {
+        if (!target.getWorldBorder().isWithinBounds(targetRoot)) {
+            PortalDestinationContext.fail(PortalFailure.BORDER);
+            return null;
+        }
+        if (!targetState.is(Blocks.NETHER_PORTAL)) {
             return null;
         }
         EntityDimensions dimensions = entity.getDimensions(entity.getPose());
@@ -66,6 +70,8 @@ public final class PortalTravel {
         if (!isClear(target, entity, dimensions, collisionFree)) {
             collisionFree = findSideExit(target, entity, dimensions, cells, exitAxis, targetPos);
             if (collisionFree == null) {
+                PortalDestinationContext.fail(target.getWorldBorder().isWithinBounds(dimensions.makeBoundingBox(targetPos))
+                        ? PortalFailure.OBSTRUCTED : PortalFailure.BORDER);
                 return null;
             }
         }

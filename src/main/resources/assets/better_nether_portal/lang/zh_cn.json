@@ -1,0 +1,7 @@
+{
+  "message.better_nether_portal.no_destination": "未找到可用的地狱门出口，请检查目标位置。",
+  "message.better_nether_portal.obstructed": "地狱门出口空间不足，请清理门前后并保留落脚处。",
+  "message.better_nether_portal.border": "地狱门出口超出世界边界。",
+  "message.better_nether_portal.limit": "目标地狱门尺寸超过服务器配置上限。",
+  "message.better_nether_portal.denied": "目标位置不允许创建地狱门。"
+}

@@ -5,6 +5,8 @@ import net.riley.betterportal.gametest.MixinGameTests;
 import net.riley.betterportal.gametest.BlueprintGameTests;
 import net.riley.betterportal.gametest.PortalGameTests;
 import net.riley.betterportal.gametest.PortalRegressionTests;
+import net.riley.betterportal.gametest.PortalFeedbackTests;
+import net.riley.betterportal.gametest.PortalCreationTests;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 
@@ -18,6 +20,8 @@ public class BetterNetherPortalMod {
         PortalConfig.register(modEventBus);
         modEventBus.addListener(PortalGameTests::register);
         modEventBus.addListener(PortalRegressionTests::register);
+        modEventBus.addListener(PortalFeedbackTests::register);
+        modEventBus.addListener(PortalCreationTests::register);
         modEventBus.addListener(BlueprintGameTests::register);
         modEventBus.addListener(MixinGameTests::register);
     }

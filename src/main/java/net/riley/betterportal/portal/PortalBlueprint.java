@@ -1,12 +1,13 @@
 package net.riley.betterportal.portal;
 
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.Direction.AxisDirection;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.BlockGetter;
@@ -18,6 +19,7 @@ import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.riley.betterportal.config.PortalConfig;
+import net.riley.betterportal.api.PortalCreateEvent;
 
 // 门形蓝图：把源门的内部格与框架偏移记下来，在对面寻找安全落点原样重建。
 // 只在服务端传送路径使用；找不到合适落点时返回 empty，由调用方回退原版矩形门。
@@ -31,8 +33,8 @@ public final class PortalBlueprint {
     private final Set<BlockPos> frameOffsets;
     // 以下在构造时算好：落点搜索每个候选点都要遍历，避免反复分配集合
     private final BlockPos[] allOffsets;
-    private final BlockPos[] bottomOffsets;
-    private final Set<BlockPos> allOffsetSet;
+    private final BlockPos[] supportOffsets;
+    private final BlockPos[] clearanceOffsets;
     private final int minRelX, maxRelX, minRelY, maxRelY, minRelZ, maxRelZ;
 
     private PortalBlueprint(Direction.Axis axis, Set<BlockPos> interiorOffsets, Set<BlockPos> frameOffsets) {
@@ -41,7 +43,6 @@ public final class PortalBlueprint {
         this.frameOffsets = Set.copyOf(frameOffsets);
         Set<BlockPos> all = new HashSet<>(interiorOffsets);
         all.addAll(frameOffsets);
-        this.allOffsetSet = Set.copyOf(all);
         this.allOffsets = all.toArray(BlockPos[]::new);
         int x0 = Integer.MAX_VALUE, x1 = Integer.MIN_VALUE;
         int y0 = Integer.MAX_VALUE, y1 = Integer.MIN_VALUE;
@@ -61,7 +62,14 @@ public final class PortalBlueprint {
         this.minRelZ = z0;
         this.maxRelZ = z1;
         int bottomY = y0;
-        this.bottomOffsets = all.stream().filter(o -> o.getY() == bottomY).toArray(BlockPos[]::new);
+        this.supportOffsets = all.stream().filter(o -> o.getY() == bottomY).map(BlockPos::below).toArray(BlockPos[]::new);
+        Direction cross = axis == Direction.Axis.X ? Direction.SOUTH : Direction.EAST;
+        this.clearanceOffsets = new BlockPos[interiorOffsets.size() * 2];
+        int index = 0;
+        for (BlockPos offset : this.interiorOffsets) {
+            this.clearanceOffsets[index++] = offset.relative(cross);
+            this.clearanceOffsets[index++] = offset.relative(cross.getOpposite());
+        }
     }
 
     public static Optional<PortalBlueprint> capture(BlockGetter level, BlockPos portalPos) {
@@ -127,25 +135,35 @@ public final class PortalBlueprint {
                 ? level.getMinBuildHeight() + level.dimensionType().logicalHeight() - 8
                 : level.getMaxBuildHeight() - 2;
 
+        boolean carve = false;
         Optional<BlockPos> spot = findGroundedSpot(level, clamped, border, minBuild, maxBuild);
-        if (spot.isPresent()) {
-            paste(level, spot.get(), false);
-            return spot;
+        if (spot.isEmpty()) {
+            spot = scanAirOrCarve(level, clamped, border, minBuild, maxBuild, false);
         }
-        spot = scanAirOrCarve(level, clamped, border, minBuild, maxBuild, false);
-        if (spot.isPresent()) {
-            paste(level, spot.get(), false);
-            return spot;
+        if (spot.isEmpty()) {
+            carve = true;
+            spot = scanAirOrCarve(level, clamped, border, minBuild, maxBuild, true);
         }
-        spot = scanAirOrCarve(level, clamped, border, minBuild, maxBuild, true);
-        if (spot.isPresent()) {
-            paste(level, spot.get(), true);
-            return spot;
+        if (spot.isEmpty()) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        BlockPos root = spot.get();
+        Map<BlockPos, BlockState> blocks = placementPlan(level, root, carve);
+        Set<BlockPos> cells = new HashSet<>();
+        this.interiorOffsets.forEach(offset -> cells.add(root.offset(offset)));
+        if (!PortalCreation.allow(level, root, this.axis, cells, blocks, PortalCreateEvent.Reason.COPY)) {
+            return Optional.empty();
+        }
+        // 计划顺序为清理、支撑、框架、门格；门格最后填，避免半扇门触发邻块复检。
+        blocks.forEach((pos, state) -> level.setBlock(pos, state, state.is(Blocks.NETHER_PORTAL) ? 18 : 3));
+        return spot;
     }
 
     private Optional<BlockPos> findGroundedSpot(ServerLevel level, BlockPos center, WorldBorder border, int minBuild, int maxBuild) {
+        BlockPos.MutableBlockPos surface = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos root = new BlockPos.MutableBlockPos();
+        int startY = Math.min(maxBuild, Math.max(minBuild, center.getY() + 16));
+        int endY = Math.max(minBuild, center.getY() - 48);
         for (int radius = 0; radius <= SEARCH_RADIUS; radius++) {
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
@@ -154,15 +172,13 @@ public final class PortalBlueprint {
                     }
                     int x = center.getX() + dx;
                     int z = center.getZ() + dz;
-                    int startY = Math.min(maxBuild, Math.max(minBuild, center.getY() + 16));
-                    int endY = Math.max(minBuild, center.getY() - 48);
                     for (int surfaceY = startY; surfaceY >= endY; surfaceY--) {
-                        BlockPos surface = new BlockPos(x, surfaceY, z);
+                        surface.set(x, surfaceY, z);
                         BlockState state = level.getBlockState(surface);
                         if (!isSolidGround(level, surface, state) || state.is(Blocks.BEDROCK) || isUnsafe(state)) {
                             continue;
                         }
-                        BlockPos root = new BlockPos(x, surfaceY + 1 - this.minRelY, z);
+                        root.set(x, surfaceY + 1 - this.minRelY, z);
                         if (!canPlace(level, root, border, minBuild, maxBuild, false)) {
                             continue;
                         }
@@ -182,6 +198,7 @@ public final class PortalBlueprint {
 
     private Optional<BlockPos> scanAirOrCarve(ServerLevel level, BlockPos center, WorldBorder border, int minBuild, int maxBuild, boolean carve) {
         int preferredY = Math.min(maxBuild, Math.max(minBuild, center.getY()));
+        BlockPos.MutableBlockPos root = new BlockPos.MutableBlockPos();
         for (int radius = 0; radius <= SEARCH_RADIUS; radius++) {
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
@@ -189,14 +206,12 @@ public final class PortalBlueprint {
                         continue;
                     }
                     for (int dy = 0; dy <= 24; dy++) {
-                        int[] ys = dy == 0
-                                ? new int[] { preferredY }
-                                : new int[] { preferredY + dy, preferredY - dy };
-                        for (int y : ys) {
+                        for (int side = 0; side < (dy == 0 ? 1 : 2); side++) {
+                            int y = preferredY + (side == 0 ? dy : -dy);
                             if (y < minBuild || y > maxBuild) {
                                 continue;
                             }
-                            BlockPos root = new BlockPos(center.getX() + dx, y - this.minRelY, center.getZ() + dz);
+                            root.set(center.getX() + dx, y - this.minRelY, center.getZ() + dz);
                             if (!canPlace(level, root, border, minBuild, maxBuild, carve)) {
                                 continue;
                             }
@@ -235,8 +250,8 @@ public final class PortalBlueprint {
 
     private boolean hasSolidSupport(ServerLevel level, BlockPos root) {
         BlockPos.MutableBlockPos below = new BlockPos.MutableBlockPos();
-        for (BlockPos offset : this.bottomOffsets) {
-            below.setWithOffset(root, offset).move(Direction.DOWN);
+        for (BlockPos offset : this.supportOffsets) {
+            below.setWithOffset(root, offset);
             BlockState state = level.getBlockState(below);
             if (!isSolidGround(level, below, state) || isUnsafe(state)) {
                 return false;
@@ -247,8 +262,9 @@ public final class PortalBlueprint {
 
     // 空中/开凿落点需要补支撑时，也不能覆盖玩家方块。
     private boolean canEnsureSupport(ServerLevel level, BlockPos root) {
-        for (BlockPos offset : this.bottomOffsets) {
-            BlockPos below = root.offset(offset).below();
+        BlockPos.MutableBlockPos below = new BlockPos.MutableBlockPos();
+        for (BlockPos offset : this.supportOffsets) {
+            below.setWithOffset(root, offset);
             BlockState state = level.getBlockState(below);
             if (!isSolidGround(level, below, state) && !canReplace(state, false)) {
                 return false;
@@ -258,13 +274,11 @@ public final class PortalBlueprint {
     }
 
     private boolean hasPlayerClearance(ServerLevel level, BlockPos root, WorldBorder border, boolean carve) {
-        for (BlockPos pos : safetyPositions(root)) {
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (BlockPos offset : this.clearanceOffsets) {
+            pos.setWithOffset(root, offset);
             if (!border.isWithinBounds(pos)) {
                 return false;
-            }
-            // 门格会在粘贴时替换，已由 canPlace 检查；这里检查最终保留的出口空间。
-            if (this.allOffsetSet.contains(pos.subtract(root))) {
-                continue;
             }
             BlockState state = level.getBlockState(pos);
             if (!isOpenForPlayer(level, pos, state) && (!carve || !canReplace(state, true))) {
@@ -291,70 +305,35 @@ public final class PortalBlueprint {
         return true;
     }
 
-    private void paste(ServerLevel level, BlockPos root, boolean carve) {
+    private Map<BlockPos, BlockState> placementPlan(ServerLevel level, BlockPos root, boolean carve) {
+        Map<BlockPos, BlockState> blocks = new LinkedHashMap<>();
         if (carve) {
-            clearSafetyVolume(level, root);
-        }
-        // 支撑与框架用 flag 3（与原版 createPortal 的 setBlockAndUpdate 一致）：
-        // 周围液体/沙砾正常更新；门方块最后用 flag 18 填，不触发邻块更新、避免填一半就被复检碎掉。
-        ensureSupport(level, root);
-        BlockState frame = Blocks.OBSIDIAN.defaultBlockState();
-        BlockState portal = Blocks.NETHER_PORTAL.defaultBlockState().setValue(NetherPortalBlock.AXIS, this.axis);
-        for (BlockPos offset : this.frameOffsets) {
-            level.setBlockAndUpdate(root.offset(offset), frame);
-        }
-        for (BlockPos offset : this.interiorOffsets) {
-            level.setBlock(root.offset(offset), portal, 18);
-        }
-    }
-
-    // 开凿模式下清掉门前后的净空；框架/门格本身随后会被覆盖，不在这里动。
-    private void clearSafetyVolume(ServerLevel level, BlockPos root) {
-        for (BlockPos pos : safetyPositions(root)) {
-            if (this.allOffsetSet.contains(pos.subtract(root))) {
-                continue;
-            }
-            BlockState state = level.getBlockState(pos);
-            if (canReplace(state, true) && !state.is(Blocks.NETHER_PORTAL)) {
-                level.setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState());
+            for (BlockPos offset : this.clearanceOffsets) {
+                BlockPos pos = root.offset(offset);
+                if (canReplace(level.getBlockState(pos), true)) {
+                    blocks.put(pos, Blocks.AIR.defaultBlockState());
+                }
             }
         }
-    }
-
-    // 底部框架下方若不是实体/安全方块（空中或开凿落点），补一层石/下界岩。
-    private void ensureSupport(ServerLevel level, BlockPos root) {
         BlockState filler = level.dimension() == Level.NETHER
-                ? Blocks.NETHERRACK.defaultBlockState()
-                : Blocks.STONE.defaultBlockState();
-        for (BlockPos offset : this.bottomOffsets) {
-            BlockPos below = root.offset(offset).below();
-            if (below.getY() < level.getMinBuildHeight()) {
-                continue;
-            }
-            BlockState state = level.getBlockState(below);
-            if (state.is(Blocks.BEDROCK) || state.is(Blocks.NETHER_PORTAL)
-                    || CustomPortalShape.isFrame(level, below, state)) {
-                continue;
-            }
-            if (!isSolidGround(level, below, state) && canReplace(state, false)) {
-                level.setBlockAndUpdate(below, filler);
+                ? Blocks.NETHERRACK.defaultBlockState() : Blocks.STONE.defaultBlockState();
+        for (BlockPos offset : this.supportOffsets) {
+            BlockPos pos = root.offset(offset);
+            BlockState state = level.getBlockState(pos);
+            if (!state.is(Blocks.BEDROCK) && !state.is(Blocks.NETHER_PORTAL)
+                    && !CustomPortalShape.isFrame(level, pos, state)
+                    && !isSolidGround(level, pos, state) && canReplace(state, false)) {
+                blocks.put(pos, filler);
             }
         }
-    }
-
-    // 站人需要的空间：每个内部格 + 门前/门后各一格（沿垂直于门平面的轴）。
-    private Set<BlockPos> safetyPositions(BlockPos root) {
-        Set<BlockPos> positions = new HashSet<>();
-        Direction.Axis cross = this.axis == Direction.Axis.X ? Direction.Axis.Z : Direction.Axis.X;
-        Direction positive = Direction.fromAxisAndDirection(cross, AxisDirection.POSITIVE);
-        Direction negative = Direction.fromAxisAndDirection(cross, AxisDirection.NEGATIVE);
+        for (BlockPos offset : this.frameOffsets) {
+            blocks.put(root.offset(offset), Blocks.OBSIDIAN.defaultBlockState());
+        }
+        BlockState portal = Blocks.NETHER_PORTAL.defaultBlockState().setValue(NetherPortalBlock.AXIS, this.axis);
         for (BlockPos offset : this.interiorOffsets) {
-            BlockPos base = root.offset(offset);
-            positions.add(base);
-            positions.add(base.relative(positive));
-            positions.add(base.relative(negative));
+            blocks.put(root.offset(offset), portal);
         }
-        return positions;
+        return blocks;
     }
 
     private static boolean isSolidGround(ServerLevel level, BlockPos pos, BlockState state) {

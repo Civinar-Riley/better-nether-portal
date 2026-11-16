@@ -2,6 +2,9 @@ package net.riley.betterportal.mixin;
 
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
+import com.llamalad7.mixinextras.sugar.Share;
+import com.llamalad7.mixinextras.sugar.ref.LocalBooleanRef;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
@@ -19,6 +22,8 @@ import net.riley.betterportal.config.PortalConfig;
 import net.riley.betterportal.portal.CustomPortalShape;
 import net.riley.betterportal.portal.PortalBlueprint;
 import net.riley.betterportal.portal.PortalDestinationContext;
+import net.riley.betterportal.portal.PortalCreation;
+import net.riley.betterportal.portal.PortalFailure;
 import net.riley.betterportal.portal.PortalLinkData;
 import net.riley.betterportal.portal.PortalTravel;
 import org.spongepowered.asm.mixin.Final;
@@ -48,11 +53,44 @@ public abstract class PortalForcerMixin {
                 cir.setReturnValue(Optional.of(PortalTravel.largestRectangle(this.level, placed.get())));
                 return;
             }
+            if (source.denied()) {
+                cir.setReturnValue(Optional.empty());
+                return;
+            }
         }
         // 复制关闭或失败时，原版 2×3 回退也必须满足同一尺寸上限。
         if (PortalConfig.cfg(PortalConfig.PORTALS.maxInteriorCells) < 6
                 || PortalConfig.cfg(PortalConfig.PORTALS.maxSpan) < 3) {
+            PortalDestinationContext.fail(PortalFailure.LIMIT);
             cir.setReturnValue(Optional.empty());
+        }
+    }
+
+    @Inject(method = "createPortal", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ServerLevel;setBlockAndUpdate(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Z"),
+            cancellable = true)
+    private void riley$approvePlatform(BlockPos pos, Direction.Axis axis,
+            CallbackInfoReturnable<Optional<BlockUtil.FoundRectangle>> cir,
+            @Local(index = 6) BlockPos root, @Share("creationApproved") LocalBooleanRef approved) {
+        if (!approved.get()) {
+            approved.set(true);
+            if (!PortalCreation.allowFallback(this.level, root, axis, true)) {
+                cir.setReturnValue(Optional.empty());
+            }
+        }
+    }
+
+    @Inject(method = "createPortal", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ServerLevel;setBlock(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;I)Z",
+            ordinal = 0), cancellable = true)
+    private void riley$approveFrame(BlockPos pos, Direction.Axis axis,
+            CallbackInfoReturnable<Optional<BlockUtil.FoundRectangle>> cir,
+            @Local(index = 6) BlockPos root, @Share("creationApproved") LocalBooleanRef approved) {
+        if (!approved.get()) {
+            approved.set(true);
+            if (!PortalCreation.allowFallback(this.level, root, axis, false)) {
+                cir.setReturnValue(Optional.empty());
+            }
         }
     }
 

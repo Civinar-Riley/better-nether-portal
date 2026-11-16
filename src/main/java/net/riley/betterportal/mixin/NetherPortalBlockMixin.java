@@ -19,6 +19,8 @@ import net.minecraft.world.level.portal.DimensionTransition;
 import net.riley.betterportal.config.PortalConfig;
 import net.riley.betterportal.portal.CustomPortalShape;
 import net.riley.betterportal.portal.PortalDestinationContext;
+import net.riley.betterportal.portal.PortalFailure;
+import net.riley.betterportal.portal.PortalFeedback;
 import net.riley.betterportal.portal.PortalLinkData;
 import net.riley.betterportal.portal.PortalTravel;
 import org.spongepowered.asm.mixin.Mixin;
@@ -52,7 +54,8 @@ public abstract class NetherPortalBlockMixin {
                                                          Operation<DimensionTransition> original) {
         BlockPos sourceRoot = CustomPortalShape.findPortalRoot(level, pos);
         PortalDestinationContext.Source previous = PortalDestinationContext.peek();
-        PortalDestinationContext.push(new PortalDestinationContext.Source(level, pos.immutable(), sourceRoot));
+        PortalDestinationContext.Source source = new PortalDestinationContext.Source(level, pos, sourceRoot);
+        PortalDestinationContext.push(source);
         try {
             if (PortalConfig.cfg(PortalConfig.PORTALS.persistentLinks)) {
                 ResourceKey<Level> targetKey = level.dimension() == Level.NETHER ? Level.OVERWORLD : Level.NETHER;
@@ -64,14 +67,25 @@ public abstract class NetherPortalBlockMixin {
                     if (target.getWorldBorder().isWithinBounds(targetPos)
                             && target.getBlockState(targetPos).is(Blocks.NETHER_PORTAL)) {
                         BlockPos targetRoot = CustomPortalShape.findPortalRoot(target, targetPos);
-                        return PortalTravel.toPortal(target, entity, pos, targetRoot,
+                        DimensionTransition transition = PortalTravel.toPortal(target, entity, pos, targetRoot,
                                 DimensionTransition.PLAY_PORTAL_SOUND.then(e -> e.placePortalTicket(targetRoot))
                                         .then(e -> links.link(level.dimension(), sourceRoot, targetKey, targetRoot)));
+                        if (transition == null) {
+                            PortalFeedback.showFailure(entity, source.failure());
+                        }
+                        return transition;
+                    }
+                    if (!target.getWorldBorder().isWithinBounds(targetPos)) {
+                        PortalDestinationContext.fail(PortalFailure.BORDER);
                     }
                     links.unlink(level.dimension(), sourceRoot);
                 }
             }
-            return original.call(level, entity, pos);
+            DimensionTransition transition = original.call(level, entity, pos);
+            if (transition == null) {
+                PortalFeedback.showFailure(entity, source.failure());
+            }
+            return transition;
         } finally {
             if (previous == null) {
                 PortalDestinationContext.clear();
